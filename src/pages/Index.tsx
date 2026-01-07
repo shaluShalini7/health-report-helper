@@ -19,77 +19,103 @@ import { ProcessingLoader } from "@/components/ProcessingLoader";
 import { ResultCard } from "@/components/ResultCard";
 import { RedFlagAlert } from "@/components/RedFlagAlert";
 import { FeatureCard } from "@/components/FeatureCard";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 type ViewState = "home" | "upload" | "processing" | "results";
 type ProcessingStep = "extracting" | "analyzing" | "generating";
 
-// Mock result data for demonstration
-const mockResults = {
-  summary: "Your Complete Blood Count (CBC) results show mostly normal values with one parameter requiring attention.",
-  criticalFindings: ["Hemoglobin levels are below normal range (10.2 g/dL vs 12-16 g/dL)"],
-  items: [
-    {
-      name: "Hemoglobin",
-      value: "10.2",
-      unit: "g/dL",
-      status: "abnormal" as const,
-      explanation: "Your hemoglobin is slightly below the normal range. This protein carries oxygen in your blood. Low levels may cause fatigue or shortness of breath. Your doctor may recommend further testing or dietary changes.",
-    },
-    {
-      name: "White Blood Cells",
-      value: "7,500",
-      unit: "/μL",
-      status: "normal" as const,
-      explanation: "Your white blood cell count is within the healthy range. These cells help fight infections and are an important part of your immune system.",
-    },
-    {
-      name: "Platelets",
-      value: "250,000",
-      unit: "/μL",
-      status: "normal" as const,
-      explanation: "Your platelet count is normal. Platelets help your blood clot properly when you have a cut or injury.",
-    },
-    {
-      name: "Red Blood Cells",
-      value: "4.2",
-      unit: "million/μL",
-      status: "normal" as const,
-      explanation: "Your red blood cell count is within the expected range. These cells carry oxygen throughout your body.",
-    },
-  ],
-  questionsToAsk: [
-    "Should I take iron supplements for my low hemoglobin?",
-    "What dietary changes might help improve my blood count?",
-    "Do I need a follow-up test to monitor my hemoglobin levels?",
-  ],
-};
+interface AnalysisResult {
+  summary: string;
+  criticalFindings: string[];
+  items: Array<{
+    name: string;
+    value: string;
+    unit: string;
+    status: "normal" | "abnormal" | "critical";
+    explanation: string;
+  }>;
+  questionsToAsk?: string[];
+  clinicalNotes?: string;
+  reassurance?: string;
+  rawResponse?: boolean;
+}
 
 const Index = () => {
   const [view, setView] = useState<ViewState>("home");
   const [mode, setMode] = useState<"patient" | "clinician">("patient");
   const [processingStep, setProcessingStep] = useState<ProcessingStep>("extracting");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [analysisResults, setAnalysisResults] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
   };
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!selectedFile) return;
     
     setView("processing");
     setProcessingStep("extracting");
+    setError(null);
 
-    // Simulate processing steps
-    setTimeout(() => setProcessingStep("analyzing"), 1500);
-    setTimeout(() => setProcessingStep("generating"), 3000);
-    setTimeout(() => setView("results"), 4500);
+    try {
+      // Convert file to base64
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string;
+          // Remove the data:image/xxx;base64, prefix
+          const base64 = result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+      });
+      reader.readAsDataURL(selectedFile);
+      const imageBase64 = await base64Promise;
+
+      setProcessingStep("analyzing");
+
+      // Call the edge function
+      const { data, error: fnError } = await supabase.functions.invoke('analyze-report', {
+        body: {
+          imageBase64,
+          fileType: selectedFile.type,
+          mode
+        }
+      });
+
+      if (fnError) {
+        throw new Error(fnError.message || "Failed to analyze report");
+      }
+
+      if (data?.error) {
+        throw new Error(data.error);
+      }
+
+      setProcessingStep("generating");
+      
+      // Small delay for UX
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      setAnalysisResults(data);
+      setView("results");
+    } catch (err) {
+      console.error("Analysis error:", err);
+      const errorMessage = err instanceof Error ? err.message : "Failed to analyze report";
+      setError(errorMessage);
+      toast.error(errorMessage);
+      setView("upload");
+    }
   };
 
   const handleStartOver = () => {
     setView("home");
     setSelectedFile(null);
     setProcessingStep("extracting");
+    setAnalysisResults(null);
+    setError(null);
   };
 
   return (
@@ -219,7 +245,7 @@ const Index = () => {
         </main>
       )}
 
-      {view === "results" && (
+      {view === "results" && analysisResults && (
         <main className="container mx-auto px-4 py-12 animate-slide-up">
           <div className="max-w-3xl mx-auto">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
@@ -235,9 +261,9 @@ const Index = () => {
             </div>
 
             {/* Critical Findings Alert */}
-            {mockResults.criticalFindings.length > 0 && (
+            {analysisResults.criticalFindings && analysisResults.criticalFindings.length > 0 && (
               <div className="mb-8">
-                <RedFlagAlert findings={mockResults.criticalFindings} />
+                <RedFlagAlert findings={analysisResults.criticalFindings} />
               </div>
             )}
 
@@ -247,26 +273,36 @@ const Index = () => {
                 <Stethoscope className="h-5 w-5 text-primary" />
                 Summary
               </h3>
-              <p className="text-foreground/80 leading-relaxed">{mockResults.summary}</p>
+              <p className="text-foreground/80 leading-relaxed">{analysisResults.summary}</p>
             </div>
 
             {/* Result Items */}
-            <div className="space-y-4 mb-8">
-              <h3 className="font-semibold text-foreground">Detailed Results</h3>
-              {mockResults.items.map((item, index) => (
-                <ResultCard key={index} item={item} mode={mode} />
-              ))}
-            </div>
+            {analysisResults.items && analysisResults.items.length > 0 && (
+              <div className="space-y-4 mb-8">
+                <h3 className="font-semibold text-foreground">Detailed Results</h3>
+                {analysisResults.items.map((item, index) => (
+                  <ResultCard key={index} item={item} mode={mode} />
+                ))}
+              </div>
+            )}
 
-            {/* Questions to Ask */}
-            {mode === "patient" && (
+            {/* Clinical Notes (Clinician Mode) */}
+            {mode === "clinician" && analysisResults.clinicalNotes && (
+              <div className="medical-card p-6 mb-8">
+                <h3 className="font-semibold text-foreground mb-3">Clinical Notes</h3>
+                <p className="text-foreground/80 leading-relaxed">{analysisResults.clinicalNotes}</p>
+              </div>
+            )}
+
+            {/* Questions to Ask (Patient Mode) */}
+            {mode === "patient" && analysisResults.questionsToAsk && analysisResults.questionsToAsk.length > 0 && (
               <div className="medical-card p-6 mb-8">
                 <h3 className="font-semibold text-foreground mb-4 flex items-center gap-2">
                   <MessageCircle className="h-5 w-5 text-primary" />
                   Questions to Ask Your Doctor
                 </h3>
                 <ul className="space-y-3">
-                  {mockResults.questionsToAsk.map((question, index) => (
+                  {analysisResults.questionsToAsk.map((question, index) => (
                     <li key={index} className="flex items-start gap-3">
                       <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary text-sm font-medium flex items-center justify-center">
                         {index + 1}
@@ -275,6 +311,13 @@ const Index = () => {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {/* Reassurance (Patient Mode) */}
+            {mode === "patient" && analysisResults.reassurance && (
+              <div className="medical-card p-6 mb-8 bg-success/5 border-success/20">
+                <p className="text-foreground/80 leading-relaxed">{analysisResults.reassurance}</p>
               </div>
             )}
 
