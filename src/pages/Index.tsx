@@ -27,17 +27,27 @@ type ProcessingStep = "extracting" | "analyzing" | "generating";
 
 interface AnalysisResult {
   summary: string;
+  riskLevel: "low" | "moderate" | "high";
   criticalFindings: string[];
   items: Array<{
     name: string;
     value: string;
-    unit: string;
+    unit?: string;
+    referenceRange?: string;
     status: "normal" | "abnormal" | "critical";
     explanation: string;
   }>;
+  // Patient mode fields
+  overallAssessment?: "normal" | "slightly unusual" | "needs professional review";
   questionsToAsk?: string[];
-  clinicalNotes?: string;
   reassurance?: string;
+  // Clinician mode fields
+  anatomicalRegions?: string[];
+  deviations?: string[];
+  imageQuality?: string;
+  recommendation?: string;
+  // Common
+  disclaimer: string;
   rawResponse?: boolean;
 }
 
@@ -260,6 +270,49 @@ const Index = () => {
               <ModeToggle mode={mode} onModeChange={setMode} />
             </div>
 
+            {/* Risk Level Badge */}
+            {analysisResults.riskLevel && (
+              <div className={`mb-6 p-4 rounded-xl border flex items-center gap-3 ${
+                analysisResults.riskLevel === "high" 
+                  ? "bg-destructive/10 border-destructive/30" 
+                  : analysisResults.riskLevel === "moderate"
+                  ? "bg-warning/10 border-warning/30"
+                  : "bg-success/10 border-success/30"
+              }`}>
+                <div className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                  analysisResults.riskLevel === "high" 
+                    ? "bg-destructive/20 text-destructive" 
+                    : analysisResults.riskLevel === "moderate"
+                    ? "bg-warning/20 text-warning"
+                    : "bg-success/20 text-success"
+                }`}>
+                  {analysisResults.riskLevel.charAt(0).toUpperCase() + analysisResults.riskLevel.slice(1)} Risk
+                </div>
+                <span className="text-sm text-muted-foreground">
+                  {analysisResults.riskLevel === "high" 
+                    ? "Professional consultation recommended"
+                    : analysisResults.riskLevel === "moderate"
+                    ? "Some findings may need review"
+                    : "Findings appear within expected ranges"}
+                </span>
+              </div>
+            )}
+
+            {/* Overall Assessment (Patient Mode) */}
+            {mode === "patient" && analysisResults.overallAssessment && (
+              <div className={`mb-6 p-4 rounded-xl border ${
+                analysisResults.overallAssessment === "needs professional review"
+                  ? "bg-warning/10 border-warning/30"
+                  : analysisResults.overallAssessment === "slightly unusual"
+                  ? "bg-accent/50 border-accent"
+                  : "bg-success/10 border-success/30"
+              }`}>
+                <p className="text-foreground font-medium">
+                  Overall Assessment: <span className="capitalize">{analysisResults.overallAssessment}</span>
+                </p>
+              </div>
+            )}
+
             {/* Critical Findings Alert */}
             {analysisResults.criticalFindings && analysisResults.criticalFindings.length > 0 && (
               <div className="mb-8">
@@ -286,12 +339,42 @@ const Index = () => {
               </div>
             )}
 
-            {/* Clinical Notes (Clinician Mode) */}
-            {mode === "clinician" && analysisResults.clinicalNotes && (
-              <div className="medical-card p-6 mb-8">
-                <h3 className="font-semibold text-foreground mb-3">Clinical Notes</h3>
-                <p className="text-foreground/80 leading-relaxed">{analysisResults.clinicalNotes}</p>
-              </div>
+            {/* Clinician Mode: Anatomical Regions, Deviations, Recommendation */}
+            {mode === "clinician" && (
+              <>
+                {analysisResults.anatomicalRegions && analysisResults.anatomicalRegions.length > 0 && (
+                  <div className="medical-card p-6 mb-8">
+                    <h3 className="font-semibold text-foreground mb-3">Anatomical Regions Involved</h3>
+                    <ul className="list-disc list-inside text-foreground/80 space-y-1">
+                      {analysisResults.anatomicalRegions.map((region, index) => (
+                        <li key={index}>{region}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {analysisResults.deviations && analysisResults.deviations.length > 0 && (
+                  <div className="medical-card p-6 mb-8">
+                    <h3 className="font-semibold text-foreground mb-3">Notable Deviations</h3>
+                    <ul className="list-disc list-inside text-foreground/80 space-y-1">
+                      {analysisResults.deviations.map((deviation, index) => (
+                        <li key={index}>{deviation}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {analysisResults.recommendation && (
+                  <div className="medical-card p-6 mb-8 bg-accent/30">
+                    <h3 className="font-semibold text-foreground mb-3">Recommendation</h3>
+                    <p className="text-foreground/80 leading-relaxed">{analysisResults.recommendation}</p>
+                  </div>
+                )}
+                {analysisResults.imageQuality && (
+                  <div className="medical-card p-6 mb-8">
+                    <h3 className="font-semibold text-foreground mb-3">Image/Report Quality Notes</h3>
+                    <p className="text-muted-foreground">{analysisResults.imageQuality}</p>
+                  </div>
+                )}
+              </>
             )}
 
             {/* Questions to Ask (Patient Mode) */}
@@ -321,7 +404,17 @@ const Index = () => {
               </div>
             )}
 
-            {/* Disclaimer */}
+            {/* Disclaimer from AI Response */}
+            {analysisResults.disclaimer && (
+              <div className="medical-card p-6 mb-8 bg-warning/5 border-warning/20">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 text-warning flex-shrink-0 mt-0.5" />
+                  <p className="text-foreground/80 text-sm leading-relaxed">{analysisResults.disclaimer}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Standard Disclaimer */}
             <DisclaimerBanner variant="warning" className="mb-8" />
 
             {/* Actions */}
