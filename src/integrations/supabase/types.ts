@@ -14,13 +14,113 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      document_chunks: {
+        Row: {
+          chunk_index: number
+          content: string
+          content_category: string
+          created_at: string
+          document_id: string
+          embedding: string | null
+          id: string
+          report_type: string
+          source: string
+        }
+        Insert: {
+          chunk_index: number
+          content: string
+          content_category: string
+          created_at?: string
+          document_id: string
+          embedding?: string | null
+          id?: string
+          report_type: string
+          source: string
+        }
+        Update: {
+          chunk_index?: number
+          content?: string
+          content_category?: string
+          created_at?: string
+          document_id?: string
+          embedding?: string | null
+          id?: string
+          report_type?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_chunks_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_documents: {
+        Row: {
+          content: string
+          content_category: string
+          created_at: string
+          id: string
+          metadata: Json | null
+          report_type: string
+          source: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          content: string
+          content_category: string
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          report_type: string
+          source: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          content?: string
+          content_category?: string
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          report_type?: string
+          source?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      hybrid_search: {
+        Args: {
+          filter_category?: string
+          filter_report_type?: string
+          match_count?: number
+          query_embedding: string
+          query_text: string
+          text_weight?: number
+          vector_weight?: number
+        }
+        Returns: {
+          combined_score: number
+          content: string
+          content_category: string
+          document_id: string
+          id: string
+          report_type: string
+          similarity: number
+          source: string
+          text_rank: number
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
