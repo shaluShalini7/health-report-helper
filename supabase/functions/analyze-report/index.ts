@@ -13,6 +13,7 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 interface RetrievedChunk {
   id: string;
   content: string;
+  document_id: string;
   content_category: string;
   report_type: string;
   source: string;
@@ -21,10 +22,20 @@ interface RetrievedChunk {
   combined_score: number;
 }
 
+interface ChunkWithTitle extends RetrievedChunk {
+  document_title: string;
+}
+
 interface SafeContext {
   content: string;
   source: string;
+  document_title: string;
   category: string;
+}
+
+interface Reference {
+  source: string;
+  title: string;
 }
 
 // Generate embedding using Gemini API
@@ -56,7 +67,6 @@ async function generateEmbedding(text: string, apiKey: string): Promise<number[]
 
 // Extract keywords from text for text-based search
 function extractKeywords(text: string): string {
-  // Remove common stop words and extract meaningful medical terms
   const stopWords = new Set([
     'the', 'a', 'an', 'is', 'are', 'was', 'were', 'been', 'be', 'have', 'has',
     'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may',
@@ -75,19 +85,18 @@ function extractKeywords(text: string): string {
     .split(/\s+/)
     .filter(word => word.length > 2 && !stopWords.has(word));
 
-  // Return unique keywords joined for PostgreSQL text search
   return [...new Set(words)].slice(0, 20).join(' | ');
 }
 
-// Perform hybrid search using both vector similarity and text search
-async function hybridSearch(
+// Perform hybrid search and enrich with document titles
+async function hybridSearchWithTitles(
   supabase: any,
   queryEmbedding: number[],
   queryText: string,
   reportType?: string,
   contentCategory?: string
-): Promise<RetrievedChunk[]> {
-  console.log("Performing hybrid search...");
+): Promise<ChunkWithTitle[]> {
+  console.log("Performing hybrid search with document title derivation...");
   
   const keywords = extractKeywords(queryText);
   console.log("Extracted keywords:", keywords);
@@ -107,13 +116,44 @@ async function hybridSearch(
     return [];
   }
 
-  const results = data as RetrievedChunk[] | null;
-  console.log(`Retrieved ${results?.length || 0} chunks from knowledge base`);
-  return results || [];
+  const chunks = (data as RetrievedChunk[] | null) || [];
+  console.log(`Retrieved ${chunks.length} chunks from knowledge base`);
+
+  if (chunks.length === 0) {
+    return [];
+  }
+
+  // Derive document titles by joining with knowledge_documents
+  const documentIds = [...new Set(chunks.map(c => c.document_id))];
+  
+  const { data: documents, error: docError } = await supabase
+    .from('knowledge_documents')
+    .select('id, title')
+    .in('id', documentIds);
+
+  if (docError) {
+    console.error("Error fetching document titles:", docError);
+    // Return chunks without titles if lookup fails
+    return chunks.map(c => ({ ...c, document_title: "Unknown Document" }));
+  }
+
+  const titleMap = new Map<string, string>();
+  for (const doc of documents || []) {
+    titleMap.set(doc.id, doc.title);
+  }
+
+  // Enrich chunks with document titles
+  const enrichedChunks: ChunkWithTitle[] = chunks.map(chunk => ({
+    ...chunk,
+    document_title: titleMap.get(chunk.document_id) || "Unknown Document"
+  }));
+
+  console.log(`Enriched ${enrichedChunks.length} chunks with document titles`);
+  return enrichedChunks;
 }
 
-// Apply safety filtering based on user mode
-function applySafetyFilter(chunks: RetrievedChunk[], mode: string): SafeContext[] {
+// Apply safety filtering based on user mode - preserves document_title
+function applySafetyFilter(chunks: ChunkWithTitle[], mode: string): SafeContext[] {
   console.log(`Applying safety filter for ${mode} mode...`);
   
   // Filter out diagnosis and treatment content categories
@@ -135,6 +175,7 @@ function applySafetyFilter(chunks: RetrievedChunk[], mode: string): SafeContext[
       .map(chunk => ({
         content: chunk.content,
         source: chunk.source,
+        document_title: chunk.document_title,
         category: chunk.content_category
       }));
   }
@@ -143,28 +184,44 @@ function applySafetyFilter(chunks: RetrievedChunk[], mode: string): SafeContext[
   return filteredChunks.map(chunk => ({
     content: chunk.content,
     source: chunk.source,
+    document_title: chunk.document_title,
     category: chunk.content_category
   }));
 }
 
-// Build context string from retrieved and filtered content
+// Build context string with citation format: [SOURCE – Document Title]
 function buildContext(safeContexts: SafeContext[]): string {
   if (safeContexts.length === 0) {
     return "";
   }
 
-  const contextParts = safeContexts.map((ctx, index) => 
-    `[Reference ${index + 1}] (Source: ${ctx.source}, Category: ${ctx.category})\n${ctx.content}`
+  const contextParts = safeContexts.map(ctx => 
+    `[${ctx.source} – ${ctx.document_title}]\n${ctx.content}`
   );
 
-  return `
-MEDICAL REFERENCE CONTEXT (from verified sources):
-=====================================
+  return `CONTEXT:
+---
 ${contextParts.join('\n\n')}
-=====================================
+---`;
+}
 
-IMPORTANT: Base your analysis ONLY on the information provided in the uploaded image/report AND the reference context above. Do not use any external knowledge.
-`;
+// Extract unique references from safe contexts
+function extractReferences(safeContexts: SafeContext[]): Reference[] {
+  const seen = new Set<string>();
+  const references: Reference[] = [];
+
+  for (const ctx of safeContexts) {
+    const key = `${ctx.source}::${ctx.document_title}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      references.push({
+        source: ctx.source,
+        title: ctx.document_title
+      });
+    }
+  }
+
+  return references;
 }
 
 // Detect report type from image analysis
@@ -267,66 +324,134 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Step 1: Detect report type and extract text from image
-    console.log("=== RAG WORKFLOW START ===");
+    console.log("=== CITATION-AWARE RAG WORKFLOW START ===");
     const { type: reportType, extractedText } = await detectReportType(imageBase64, fileType, LOVABLE_API_KEY);
     console.log(`Detected report type: ${reportType}`);
     console.log(`Extracted text length: ${extractedText.length} characters`);
 
-    // Step 2: Generate embedding for retrieval query
-    let retrievedContext = "";
-    let usedRAG = false;
+    // Step 2: RAG Retrieval - ALWAYS attempt before generation
+    let safeContexts: SafeContext[] = [];
+    let references: Reference[] = [];
     
-    if (GEMINI_API_KEY && extractedText.length > 20) {
-      try {
-        const queryEmbedding = await generateEmbedding(extractedText, GEMINI_API_KEY);
-        
-        // Step 3: Perform hybrid search
-        const retrievedChunks = await hybridSearch(
-          supabase,
-          queryEmbedding,
-          extractedText,
-          reportType,
-          undefined
-        );
-
-        if (retrievedChunks.length > 0) {
-          // Step 4: Apply safety filtering
-          const safeContexts = applySafetyFilter(retrievedChunks, mode);
-          
-          // Step 5: Build context for LLM
-          retrievedContext = buildContext(safeContexts);
-          usedRAG = true;
-          console.log(`RAG context built with ${safeContexts.length} safe references`);
-        } else {
-          console.log("No relevant documents found in knowledge base");
-        }
-      } catch (embeddingError) {
-        console.error("Embedding/retrieval error:", embeddingError);
-        // Continue without RAG if embedding fails
-      }
-    } else {
-      console.log("Skipping RAG: No GEMINI_API_KEY or insufficient extracted text");
+    if (!GEMINI_API_KEY) {
+      console.error("GEMINI_API_KEY not configured - RAG cannot proceed");
+      return new Response(
+        JSON.stringify({
+          summary: "Unable to process request. Knowledge base access is not configured.",
+          references: []
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Step 6: Build system prompt with RAG context
+    if (extractedText.length < 20) {
+      console.log("Insufficient text extracted from image for RAG retrieval");
+      return new Response(
+        JSON.stringify({
+          summary: "No relevant RSNA/CDC guideline found in the knowledge base.",
+          references: [],
+          reportTypeDetected: reportType,
+          disclaimer: "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation."
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    try {
+      // Generate embedding for retrieval query
+      const queryEmbedding = await generateEmbedding(extractedText, GEMINI_API_KEY);
+      
+      // Perform hybrid search with document title derivation
+      const chunksWithTitles = await hybridSearchWithTitles(
+        supabase,
+        queryEmbedding,
+        extractedText,
+        reportType,
+        undefined
+      );
+
+      // FALLBACK: If no relevant documents retrieved, return immediately without calling LLM
+      if (chunksWithTitles.length === 0) {
+        console.log("No relevant documents found - returning fallback response");
+        return new Response(
+          JSON.stringify({
+            summary: "No relevant RSNA/CDC guideline found in the knowledge base.",
+            references: [],
+            reportTypeDetected: reportType,
+            disclaimer: "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation."
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Apply safety filtering (preserves document_title)
+      safeContexts = applySafetyFilter(chunksWithTitles, mode);
+      
+      // Extract deduplicated references
+      references = extractReferences(safeContexts);
+      
+      console.log(`RAG context built with ${safeContexts.length} safe references`);
+      console.log(`Unique references: ${references.length}`);
+
+    } catch (embeddingError) {
+      console.error("Embedding/retrieval error:", embeddingError);
+      return new Response(
+        JSON.stringify({
+          summary: "No relevant RSNA/CDC guideline found in the knowledge base.",
+          references: [],
+          error: "Knowledge base retrieval failed",
+          reportTypeDetected: reportType,
+          disclaimer: "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation."
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // If safety filtering removed all chunks, return fallback
+    if (safeContexts.length === 0) {
+      console.log("All chunks filtered by safety filter - returning fallback");
+      return new Response(
+        JSON.stringify({
+          summary: "No relevant RSNA/CDC guideline found in the knowledge base.",
+          references: [],
+          reportTypeDetected: reportType,
+          disclaimer: "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation."
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Step 3: Build context with citation format
+    const retrievedContext = buildContext(safeContexts);
+
+    // Step 4: Build citation-aware system prompt
+    const citationInstructions = `
+CITATION REQUIREMENTS:
+- Generate your summary using ONLY the information provided in the CONTEXT above.
+- Do NOT use any external knowledge or make assumptions beyond the context.
+- Include inline citations using this exact format: [SOURCE – Document Title]
+- Example: "The chest radiograph shows normal findings [RSNA – Chest X-Ray Guidelines]."
+- Every factual statement must be traceable to the provided context.
+- Do NOT hallucinate or introduce facts not present in the context.`;
+
     const baseSystemPrompt = mode === "clinician" 
-      ? `You are a medical report analysis assistant for healthcare professionals. Analyze the uploaded medical image or report (X-ray, MRI, CT, radiology images, lab reports, etc.).
+      ? `You are a medical report analysis assistant for healthcare professionals. Analyze the uploaded medical image or report using ONLY the provided RSNA/CDC guideline context.
 
 ${retrievedContext}
 
-YOUR ROLE:
-- Provide quick, structured, and clinically relevant insights
-- Perform deeper technical analysis of the uploaded data
-- Extract medically relevant features and observations
-- Focus ONLY on findings directly related to the uploaded data
-- ${usedRAG ? "Ground your explanations in the provided reference context" : "Provide general medical observations only"}
+${citationInstructions}
 
-OUTPUT FORMAT (use standard medical terminology, short bullet-point format):
+YOUR ROLE:
+- Provide structured, clinically relevant insights grounded in the provided guidelines
+- Extract medically relevant features and observations from the image
+- Reference the specific guidelines that support your observations
+
+OUTPUT FORMAT (use standard medical terminology, include inline citations):
 Respond in JSON format:
 {
-  "summary": "Brief clinical summary of key findings",
+  "summary": "Clinical summary with inline citations [SOURCE – Document Title] for each key point",
   "riskLevel": "low" | "moderate" | "high",
-  "criticalFindings": ["Array of notable observations requiring attention"],
+  "criticalFindings": ["Array of notable observations with citations"],
   "items": [
     {
       "name": "Test/Finding name",
@@ -334,14 +459,13 @@ Respond in JSON format:
       "unit": "Unit if applicable",
       "referenceRange": "Normal range if applicable",
       "status": "normal" | "abnormal" | "critical",
-      "explanation": "Clinical significance - brief, technical"
+      "explanation": "Clinical significance with citation [SOURCE – Document Title]"
     }
   ],
   "anatomicalRegions": ["Regions involved if applicable"],
-  "deviations": ["Notable abnormalities or deviations"],
+  "deviations": ["Notable abnormalities with citations"],
   "imageQuality": "Notes on image/report quality if relevant",
   "recommendation": "Further clinical correlation advised - no treatment recommendations",
-  "ragSourcesUsed": ${usedRAG},
   "disclaimer": "This analysis is for informational purposes only. Clinical correlation required. Not a diagnostic conclusion."
 }
 
@@ -349,77 +473,67 @@ STRICT RULES:
 - NO final diagnosis
 - NO treatment recommendations
 - NO prescription suggestions
-- Risk levels (Low/Moderate/High) are QUALITATIVE indicators only
+- ALL statements must cite the source context
+- Risk levels are QUALITATIVE indicators only
 - Always include: "Further clinical correlation advised"
-- Never provide definitive diagnostic conclusions
-- ${usedRAG ? "Only use information from the uploaded image and provided reference context" : "Provide observations based solely on the uploaded image"}`
-      : `You are a friendly medical report explanation assistant helping patients understand their results. Analyze the uploaded medical image or report (X-ray, MRI, CT, radiology images, lab reports, etc.).
+- Never provide definitive diagnostic conclusions`
+      : `You are a friendly medical report explanation assistant helping patients understand their results. Use ONLY the provided RSNA/CDC guideline context to explain the findings.
 
 ${retrievedContext}
 
+${citationInstructions}
+
 YOUR PURPOSE:
 - Help patients understand their uploaded image or report
-- Use very simple, easy-to-understand language (layman-friendly)
-- Maintain a calm, reassuring, neutral tone
-- Avoid medical jargon - explain it simply if unavoidable
-- ${usedRAG ? "Use the provided medical references to give accurate, grounded explanations" : "Provide general observations only"}
+- Use simple, easy-to-understand language
+- Ground all explanations in the provided medical guidelines
+- Include citations to show where information comes from
 
 ANALYSIS RULES:
-- Identify general visual or textual indicators
+- Explain findings in simple terms with citations
 - Categorize overall findings into risk level: "low", "moderate", or "high"
 - This risk classification is NON-DIAGNOSTIC and QUALITATIVE only
 
 OUTPUT RULES BY RISK LEVEL:
 If Risk is LOW or MODERATE:
 - Use calm, reassuring language
-- Explain findings in simple, everyday terms
-- Do NOT urge immediate medical action
-- Example tone: "Some differences are visible, but this does not necessarily indicate a serious issue."
+- Explain with simple terms and cite sources
 
 If Risk is HIGH:
-- Gently and clearly advise professional consultation
+- Gently advise professional consultation
 - Avoid panic-inducing language
-- Do NOT name diseases or conditions
-- Use wording like: "Some findings appear more concerning and may require attention. It would be a good idea to consult a qualified doctor as soon as possible for a detailed medical evaluation."
+- Use wording like: "Some findings may require attention. Please consult a doctor for evaluation."
 
 Respond in JSON format:
 {
-  "summary": "Simple, easy-to-understand summary of overall results",
+  "summary": "Simple summary with inline citations [SOURCE – Document Title] for each key point",
   "riskLevel": "low" | "moderate" | "high",
-  "criticalFindings": ["Array of findings that may need doctor attention - simple language, no disease names"],
+  "criticalFindings": ["Findings that may need attention - simple language with citations"],
   "items": [
     {
       "name": "Test or finding name",
       "value": "Value or observation",
       "unit": "Unit if applicable",
       "status": "normal" | "abnormal" | "critical",
-      "explanation": "Simple explanation of what this means - like talking to a non-medical person"
+      "explanation": "Simple explanation with citation [SOURCE – Document Title]"
     }
   ],
   "overallAssessment": "normal" | "slightly unusual" | "needs professional review",
-  "questionsToAsk": ["Array of helpful questions to ask your doctor"],
+  "questionsToAsk": ["Helpful questions to ask your doctor"],
   "reassurance": "Encouraging, calming message emphasizing safety and next steps",
-  "ragSourcesUsed": ${usedRAG},
   "disclaimer": "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation."
 }
 
 STRICTLY PROHIBITED (NEVER DO):
-- Disease prediction
-- Disease naming (no specific condition names)
+- Disease prediction or naming
 - Diagnosis statements
 - Treatment or medication advice
-- Severity percentages or scores
-- Panic-inducing language
+- Information not in the provided context
+- Statements without citations`;
 
-MANDATORY:
-- Always include a safety disclaimer
-- Always emphasize consulting a healthcare professional
-- Be reassuring but honest about uncertainty
-- ${usedRAG ? "Only use information from the uploaded image and provided reference context" : "Base observations solely on the uploaded image"}`;
+    console.log("Calling Lovable AI Gateway for citation-aware analysis...");
 
-    console.log("Calling Lovable AI Gateway for medical report analysis...");
-
-    // Step 7: Call LLM with context-injected prompt
+    // Step 5: Call LLM with context-injected prompt
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -435,7 +549,7 @@ MANDATORY:
             content: [
               {
                 type: "text",
-                text: `Please analyze this medical image or report and provide the structured analysis as specified. Remember to follow all safety rules strictly.${usedRAG ? " Ground your explanations in the provided medical reference context." : ""}`
+                text: "Analyze this medical image using ONLY the provided RSNA/CDC context. Include inline citations for all statements."
               },
               {
                 type: "image_url",
@@ -484,7 +598,7 @@ MANDATORY:
       );
     }
 
-    // Step 8: Parse and validate response
+    // Step 6: Parse and validate response
     let parsedResult;
     try {
       const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, content];
@@ -498,9 +612,6 @@ MANDATORY:
         riskLevel: "moderate",
         criticalFindings: [],
         items: [],
-        questionsToAsk: [],
-        ragSourcesUsed: usedRAG,
-        disclaimer: "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation.",
         rawResponse: true
       };
     }
@@ -512,11 +623,13 @@ MANDATORY:
         : "This is not a medical diagnosis. Please consult a qualified healthcare professional for accurate interpretation.";
     }
     
-    parsedResult.ragSourcesUsed = usedRAG;
+    // Add structured reference list (deduplicated)
+    parsedResult.references = references;
+    parsedResult.ragSourcesUsed = true;
     parsedResult.reportTypeDetected = reportType;
 
-    console.log("=== RAG WORKFLOW COMPLETE ===");
-    console.log(`RAG used: ${usedRAG}, Report type: ${reportType}`);
+    console.log("=== CITATION-AWARE RAG WORKFLOW COMPLETE ===");
+    console.log(`References included: ${references.length}`);
 
     return new Response(
       JSON.stringify(parsedResult),
