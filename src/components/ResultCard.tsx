@@ -38,7 +38,7 @@ export const ResultCard = ({ item, mode }: ResultCardProps) => {
     },
   };
 
-  const config = statusConfig[item.status];
+  const config = statusConfig[item.status] || statusConfig.normal;
   const Icon = config.icon;
 
   return (
