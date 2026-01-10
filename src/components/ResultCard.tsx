@@ -4,7 +4,7 @@ interface ResultItem {
   name: string;
   value: string;
   unit?: string;
-  status: "normal" | "abnormal" | "critical";
+  status?: "normal" | "abnormal" | "critical";
   explanation: string;
 }
 

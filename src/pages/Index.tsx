@@ -27,27 +27,26 @@ type ProcessingStep = "extracting" | "analyzing" | "generating";
 
 interface AnalysisResult {
   summary: string;
-  riskLevel: "low" | "moderate" | "high";
-  criticalFindings: string[];
   items: Array<{
     name: string;
     value: string;
     unit?: string;
     referenceRange?: string;
-    status: "normal" | "abnormal" | "critical";
+    status?: "normal" | "abnormal" | "critical";
     explanation: string;
   }>;
   // Patient mode fields
-  overallAssessment?: "normal" | "slightly unusual" | "needs professional review";
+  simpleExplanation?: string;
   questionsToAsk?: string[];
   reassurance?: string;
   // Clinician mode fields
-  anatomicalRegions?: string[];
-  deviations?: string[];
-  imageQuality?: string;
-  recommendation?: string;
+  guidelinePoints?: string[];
+  clinicalCorrelation?: string;
+  // References with citations
+  references?: Array<{ source: string; title: string }>;
   // Common
   disclaimer: string;
+  reportTypeDetected?: string;
   rawResponse?: boolean;
 }
 
@@ -270,53 +269,22 @@ const Index = () => {
               <ModeToggle mode={mode} onModeChange={setMode} />
             </div>
 
-            {/* Risk Level Badge */}
-            {analysisResults.riskLevel && (
-              <div className={`mb-6 p-4 rounded-xl border flex items-center gap-3 ${
-                analysisResults.riskLevel === "high" 
-                  ? "bg-destructive/10 border-destructive/30" 
-                  : analysisResults.riskLevel === "moderate"
-                  ? "bg-warning/10 border-warning/30"
-                  : "bg-success/10 border-success/30"
-              }`}>
-                <div className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                  analysisResults.riskLevel === "high" 
-                    ? "bg-destructive/20 text-destructive" 
-                    : analysisResults.riskLevel === "moderate"
-                    ? "bg-warning/20 text-warning"
-                    : "bg-success/20 text-success"
-                }`}>
-                  {analysisResults.riskLevel.charAt(0).toUpperCase() + analysisResults.riskLevel.slice(1)} Risk
-                </div>
-                <span className="text-sm text-muted-foreground">
-                  {analysisResults.riskLevel === "high" 
-                    ? "Professional consultation recommended"
-                    : analysisResults.riskLevel === "moderate"
-                    ? "Some findings may need review"
-                    : "Findings appear within expected ranges"}
-                </span>
+            {/* Report Type Detected */}
+            {analysisResults.reportTypeDetected && (
+              <div className="mb-6 inline-flex items-center gap-2 bg-accent/50 text-accent-foreground px-4 py-2 rounded-full text-sm font-medium">
+                <FileText className="h-4 w-4" />
+                {analysisResults.reportTypeDetected.toUpperCase()} Imaging
               </div>
             )}
 
-            {/* Overall Assessment (Patient Mode) */}
-            {mode === "patient" && analysisResults.overallAssessment && (
-              <div className={`mb-6 p-4 rounded-xl border ${
-                analysisResults.overallAssessment === "needs professional review"
-                  ? "bg-warning/10 border-warning/30"
-                  : analysisResults.overallAssessment === "slightly unusual"
-                  ? "bg-accent/50 border-accent"
-                  : "bg-success/10 border-success/30"
-              }`}>
-                <p className="text-foreground font-medium">
-                  Overall Assessment: <span className="capitalize">{analysisResults.overallAssessment}</span>
-                </p>
-              </div>
-            )}
-
-            {/* Critical Findings Alert */}
-            {analysisResults.criticalFindings && analysisResults.criticalFindings.length > 0 && (
-              <div className="mb-8">
-                <RedFlagAlert findings={analysisResults.criticalFindings} />
+            {/* Patient Mode: Simple Explanation */}
+            {mode === "patient" && analysisResults.simpleExplanation && (
+              <div className="medical-card p-6 mb-6 bg-primary/5 border-primary/20">
+                <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                  <BookOpen className="h-5 w-5 text-primary" />
+                  What This Test Is About
+                </h3>
+                <p className="text-foreground/80 leading-relaxed">{analysisResults.simpleExplanation}</p>
               </div>
             )}
 
@@ -339,39 +307,26 @@ const Index = () => {
               </div>
             )}
 
-            {/* Clinician Mode: Anatomical Regions, Deviations, Recommendation */}
+            {/* Clinician Mode: Guideline Points */}
             {mode === "clinician" && (
               <>
-                {analysisResults.anatomicalRegions && analysisResults.anatomicalRegions.length > 0 && (
-                  <div className="medical-card p-6 mb-8">
-                    <h3 className="font-semibold text-foreground mb-3">Anatomical Regions Involved</h3>
-                    <ul className="list-disc list-inside text-foreground/80 space-y-1">
-                      {analysisResults.anatomicalRegions.map((region, index) => (
-                        <li key={index}>{region}</li>
+                {analysisResults.guidelinePoints && analysisResults.guidelinePoints.length > 0 && (
+                  <div className="medical-card p-6 mb-6">
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <Stethoscope className="h-5 w-5 text-primary" />
+                      RSNA/CDC Guideline Points
+                    </h3>
+                    <ul className="space-y-2 text-foreground/80">
+                      {analysisResults.guidelinePoints.map((point, index) => (
+                        <li key={index} className="leading-relaxed">{point}</li>
                       ))}
                     </ul>
                   </div>
                 )}
-                {analysisResults.deviations && analysisResults.deviations.length > 0 && (
-                  <div className="medical-card p-6 mb-8">
-                    <h3 className="font-semibold text-foreground mb-3">Notable Deviations</h3>
-                    <ul className="list-disc list-inside text-foreground/80 space-y-1">
-                      {analysisResults.deviations.map((deviation, index) => (
-                        <li key={index}>{deviation}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {analysisResults.recommendation && (
-                  <div className="medical-card p-6 mb-8 bg-accent/30">
-                    <h3 className="font-semibold text-foreground mb-3">Recommendation</h3>
-                    <p className="text-foreground/80 leading-relaxed">{analysisResults.recommendation}</p>
-                  </div>
-                )}
-                {analysisResults.imageQuality && (
-                  <div className="medical-card p-6 mb-8">
-                    <h3 className="font-semibold text-foreground mb-3">Image/Report Quality Notes</h3>
-                    <p className="text-muted-foreground">{analysisResults.imageQuality}</p>
+                {analysisResults.clinicalCorrelation && (
+                  <div className="medical-card p-6 mb-6 bg-accent/30">
+                    <h3 className="font-semibold text-foreground mb-3">Clinical Correlation</h3>
+                    <p className="text-foreground/80 leading-relaxed">{analysisResults.clinicalCorrelation}</p>
                   </div>
                 )}
               </>
@@ -399,8 +354,26 @@ const Index = () => {
 
             {/* Reassurance (Patient Mode) */}
             {mode === "patient" && analysisResults.reassurance && (
-              <div className="medical-card p-6 mb-8 bg-success/5 border-success/20">
+              <div className="medical-card p-6 mb-6 bg-success/5 border-success/20">
                 <p className="text-foreground/80 leading-relaxed">{analysisResults.reassurance}</p>
+              </div>
+            )}
+
+            {/* References with Citations */}
+            {analysisResults.references && analysisResults.references.length > 0 && (
+              <div className="medical-card p-6 mb-6">
+                <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                  <BookOpen className="h-5 w-5 text-primary" />
+                  Sources Referenced
+                </h3>
+                <ul className="space-y-2">
+                  {analysisResults.references.map((ref, index) => (
+                    <li key={index} className="text-sm text-muted-foreground flex items-start gap-2">
+                      <span className="font-medium text-primary">[{ref.source}]</span>
+                      <span>{ref.title}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
