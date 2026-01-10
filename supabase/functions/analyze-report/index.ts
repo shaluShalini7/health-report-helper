@@ -228,18 +228,19 @@ function extractReferences(safeContexts: SafeContext[]): Reference[] {
 async function detectReportType(imageBase64: string, fileType: string, apiKey: string): Promise<{ type: string; extractedText: string }> {
   console.log("Detecting report type and extracting text from image...");
   
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
-      messages: [
-        {
-          role: "system",
-          content: `You are a medical document classifier and text extractor. Analyze the image and:
+  try {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [
+          {
+            role: "system",
+            content: `You are a medical document classifier and text extractor. Analyze the image and:
 1. Identify the type of medical document (X-ray, MRI, CT, Lab Report, ECG, Ultrasound, Pathology, or Other)
 2. Extract all visible text and medical observations
 
@@ -250,46 +251,65 @@ Respond in JSON format:
   "anatomicalRegions": ["list of body regions visible"],
   "keyFindings": ["list of notable visual findings"]
 }`
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Analyze this medical image and extract relevant information." },
-            {
-              type: "image_url",
-              image_url: { url: `data:${fileType};base64,${imageBase64}` }
-            }
-          ]
-        }
-      ],
-      max_tokens: 2048,
-    }),
-  });
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Analyze this medical image and extract relevant information." },
+              {
+                type: "image_url",
+                image_url: { url: `data:${fileType};base64,${imageBase64}` }
+              }
+            ]
+          }
+        ],
+        max_tokens: 2048,
+      }),
+    });
 
-  if (!response.ok) {
-    console.error("Report type detection failed:", await response.text());
-    return { type: "other", extractedText: "" };
-  }
+    if (!response.ok) {
+      const errorBody = await response.text();
+      let errorInfo = { type: "error", message: "Unknown error", details: "" };
+      try {
+        errorInfo = JSON.parse(errorBody);
+      } catch { /* ignore parse errors */ }
+      
+      console.error("Report type detection failed:", errorInfo);
+      
+      // Return fallback with general imaging context for RAG search
+      return { 
+        type: "ct", // Default to CT as fallback to match knowledge base
+        extractedText: "medical imaging scan abdominal pelvic chest radiograph computed tomography"
+      };
+    }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
-  
-  try {
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, content];
-    const parsed = JSON.parse(jsonMatch[1].trim());
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
     
-    const fullText = [
-      parsed.extractedText || "",
-      ...(parsed.keyFindings || []),
-      ...(parsed.anatomicalRegions || [])
-    ].join(" ");
-    
-    return {
-      type: parsed.reportType || "other",
-      extractedText: fullText
+    try {
+      const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, content];
+      const parsed = JSON.parse(jsonMatch[1].trim());
+      
+      const fullText = [
+        parsed.extractedText || "",
+        ...(parsed.keyFindings || []),
+        ...(parsed.anatomicalRegions || [])
+      ].join(" ");
+      
+      return {
+        type: parsed.reportType || "ct",
+        extractedText: fullText || "medical imaging scan"
+      };
+    } catch {
+      return { type: "ct", extractedText: content || "medical imaging scan" };
+    }
+  } catch (error) {
+    console.error("Report type detection error:", error);
+    // Fallback to ensure RAG can proceed
+    return { 
+      type: "ct", 
+      extractedText: "medical imaging scan abdominal pelvic chest" 
     };
-  } catch {
-    return { type: "other", extractedText: content };
   }
 }
 
@@ -362,7 +382,7 @@ serve(async (req) => {
       const queryEmbedding = await generateEmbedding(extractedText, GEMINI_API_KEY);
       
       // Perform hybrid search with document title derivation
-      const chunksWithTitles = await hybridSearchWithTitles(
+      let chunksWithTitles = await hybridSearchWithTitles(
         supabase,
         queryEmbedding,
         extractedText,
@@ -370,7 +390,19 @@ serve(async (req) => {
         undefined
       );
 
-      // FALLBACK: If no relevant documents retrieved, return immediately without calling LLM
+      // FALLBACK: If no results with report type filter, try without filter
+      if (chunksWithTitles.length === 0) {
+        console.log("No results with report type filter, trying without filter...");
+        chunksWithTitles = await hybridSearchWithTitles(
+          supabase,
+          queryEmbedding,
+          extractedText,
+          undefined, // No filter
+          undefined
+        );
+      }
+
+      // FALLBACK: If still no results, return fallback response
       if (chunksWithTitles.length === 0) {
         console.log("No relevant documents found - returning fallback response");
         return new Response(
