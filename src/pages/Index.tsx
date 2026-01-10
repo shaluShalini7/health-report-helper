@@ -96,10 +96,18 @@ const Index = () => {
       });
 
       if (fnError) {
+        // Check for quota/credit errors
+        if (fnError.message?.includes('402') || fnError.message?.includes('quota') || fnError.message?.includes('credit')) {
+          throw new Error("Service temporarily unavailable. Please try again in a few minutes.");
+        }
         throw new Error(fnError.message || "Failed to analyze report");
       }
 
       if (data?.error) {
+        // Handle quota errors from response body
+        if (data.error.includes('quota') || data.error.includes('credit')) {
+          throw new Error("Service temporarily unavailable. Please try again in a few minutes.");
+        }
         throw new Error(data.error);
       }
 
