@@ -477,30 +477,15 @@ OUTPUT (JSON):
         }),
       });
 
-      // Handle rate limit / quota errors
-      if (response.status === 429) {
-        console.error("Rate limited");
-        return new Response(
-          JSON.stringify({ ...createSafeResponse(safeMode, reportType), error: "Rate limit exceeded. Please try again in a moment." }),
-          { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      
-      if (response.status === 402) {
-        console.error("Quota exceeded");
-        return new Response(
-          JSON.stringify({ ...createSafeResponse(safeMode, reportType), error: "Service quota exceeded. Please try again later." }),
-          { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      if (!response.ok) {
+      // Handle ALL errors gracefully - ALWAYS return 200 with safe data
+      if (response.status === 429 || response.status === 402 || !response.ok) {
         console.error("AI API error:", response.status);
         const fallback = createSafeResponse(safeMode, reportType);
         fallback.references = references;
+        // CRITICAL: Always return 200 so frontend receives the safe data
         return new Response(
           JSON.stringify(fallback),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
