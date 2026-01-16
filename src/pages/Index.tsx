@@ -9,7 +9,11 @@ import {
   BookOpen,
   Stethoscope,
   MessageCircle,
-  Heart
+  Heart,
+  UserCheck,
+  Activity,
+  ClipboardList,
+  CheckCircle2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
@@ -17,7 +21,6 @@ import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { FileUpload } from "@/components/FileUpload";
 import { ModeToggle } from "@/components/ModeToggle";
 import { ProcessingLoader } from "@/components/ProcessingLoader";
-import { ResultCard } from "@/components/ResultCard";
 import { FeatureCard } from "@/components/FeatureCard";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -25,22 +28,25 @@ import { toast } from "sonner";
 type ViewState = "home" | "upload" | "processing" | "results";
 type ProcessingStep = "extracting" | "analyzing" | "generating";
 
-// Safe response interface matching backend schema
+// Safe response interface matching backend schema - COMPLETE STRUCTURE
 interface AnalysisResult {
   reportType: string;
   mode: "patient" | "clinician";
+  // Patient Mode fields
+  whatThisTestIsAbout: string | null;
+  simpleImageExplanation: string | null;
   summary: string;
-  simpleExplanation: string | null;
-  guidelinePoints: string[] | null;
+  possibleRiskFactors: string | null;
+  whyConsultDoctor: string | null;
+  reassurance: string | null;
+  // Clinician Mode fields
+  imagingTypeAndRegion: string | null;
+  keyObservations: string[] | null;
+  impression: string | null;
+  recommendation: string | null;
+  // Common fields
   references: string[];
   disclaimer: string;
-  items: Array<{
-    name: string;
-    value: string;
-    explanation: string;
-  }> | null;
-  reassurance: string | null;
-  clinicalCorrelation: string | null;
   error?: string;
 }
 
@@ -103,7 +109,6 @@ const Index = () => {
         if (errorMsg.includes('quota') || errorMsg.includes('credit') || errorMsg.includes('rate limit')) {
           throw new Error("Service temporarily unavailable. Please try again in a few minutes.");
         }
-        // Continue with data even if there's a non-critical error
         console.warn("Non-critical error:", data.error);
       }
 
@@ -114,14 +119,21 @@ const Index = () => {
       const safeData: AnalysisResult = {
         reportType: data?.reportType || "unknown",
         mode: data?.mode || mode,
+        // Patient Mode fields
+        whatThisTestIsAbout: data?.whatThisTestIsAbout || null,
+        simpleImageExplanation: data?.simpleImageExplanation || null,
         summary: data?.summary || "Report analysis complete. Please consult your healthcare provider for interpretation.",
-        simpleExplanation: data?.simpleExplanation || null,
-        guidelinePoints: data?.guidelinePoints || null,
+        possibleRiskFactors: data?.possibleRiskFactors || null,
+        whyConsultDoctor: data?.whyConsultDoctor || null,
+        reassurance: data?.reassurance || null,
+        // Clinician Mode fields
+        imagingTypeAndRegion: data?.imagingTypeAndRegion || null,
+        keyObservations: Array.isArray(data?.keyObservations) ? data.keyObservations : null,
+        impression: data?.impression || null,
+        recommendation: data?.recommendation || null,
+        // Common fields
         references: Array.isArray(data?.references) ? data.references : [],
         disclaimer: data?.disclaimer || "Educational use only. Not a medical diagnosis.",
-        items: Array.isArray(data?.items) ? data.items : null,
-        reassurance: data?.reassurance || null,
-        clinicalCorrelation: data?.clinicalCorrelation || null,
       };
 
       setAnalysisResults(safeData);
@@ -143,12 +155,12 @@ const Index = () => {
     setError(null);
   };
 
-  // Re-analyze with different mode
+  // Re-analyze with different mode - COMPLETE RE-RENDER
   const handleModeChange = async (newMode: "patient" | "clinician") => {
     if (newMode === mode) return;
     setMode(newMode);
     
-    // If we have results and a file, re-analyze
+    // If we have results and a file, re-analyze with new mode
     if (analysisResults && selectedFile) {
       setView("processing");
       setProcessingStep("analyzing");
@@ -171,14 +183,18 @@ const Index = () => {
         const safeData: AnalysisResult = {
           reportType: data?.reportType || "unknown",
           mode: newMode,
+          whatThisTestIsAbout: data?.whatThisTestIsAbout || null,
+          simpleImageExplanation: data?.simpleImageExplanation || null,
           summary: data?.summary || "Report analysis complete.",
-          simpleExplanation: data?.simpleExplanation || null,
-          guidelinePoints: data?.guidelinePoints || null,
+          possibleRiskFactors: data?.possibleRiskFactors || null,
+          whyConsultDoctor: data?.whyConsultDoctor || null,
+          reassurance: data?.reassurance || null,
+          imagingTypeAndRegion: data?.imagingTypeAndRegion || null,
+          keyObservations: Array.isArray(data?.keyObservations) ? data.keyObservations : null,
+          impression: data?.impression || null,
+          recommendation: data?.recommendation || null,
           references: Array.isArray(data?.references) ? data.references : [],
           disclaimer: data?.disclaimer || "Educational use only. Not a medical diagnosis.",
-          items: Array.isArray(data?.items) ? data.items : null,
-          reassurance: data?.reassurance || null,
-          clinicalCorrelation: data?.clinicalCorrelation || null,
         };
 
         setAnalysisResults(safeData);
@@ -357,23 +373,36 @@ const Index = () => {
               </div>
             )}
 
-            {/* PATIENT MODE CONTENT */}
+            {/* ===================== PATIENT MODE CONTENT ===================== */}
             {mode === "patient" && (
               <>
-                {/* Simple Explanation */}
-                {analysisResults.simpleExplanation && (
+                {/* 1️⃣ What This Test Is About */}
+                {analysisResults.whatThisTestIsAbout && (
                   <div className="medical-card p-6 mb-6 bg-primary/5 border-primary/20">
                     <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
                       <Heart className="h-5 w-5 text-primary" />
                       What This Test Is About
                     </h3>
                     <p className="text-foreground/80 leading-relaxed text-lg">
-                      {analysisResults.simpleExplanation}
+                      {analysisResults.whatThisTestIsAbout}
                     </p>
                   </div>
                 )}
 
-                {/* Summary */}
+                {/* 2️⃣ Simple Image Explanation */}
+                {analysisResults.simpleImageExplanation && (
+                  <div className="medical-card p-6 mb-6">
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <Activity className="h-5 w-5 text-primary" />
+                      Simple Image Explanation
+                    </h3>
+                    <p className="text-foreground/80 leading-relaxed">
+                      {analysisResults.simpleImageExplanation}
+                    </p>
+                  </div>
+                )}
+
+                {/* 3️⃣ Summary */}
                 <div className="medical-card p-6 mb-6">
                   <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
                     <BookOpen className="h-5 w-5 text-primary" />
@@ -382,67 +411,109 @@ const Index = () => {
                   <p className="text-foreground/80 leading-relaxed">{analysisResults.summary}</p>
                 </div>
 
-                {/* Reassurance */}
+                {/* 4️⃣ Possible Risk Factors */}
+                {analysisResults.possibleRiskFactors && (
+                  <div className="medical-card p-6 mb-6 bg-accent/30">
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <ClipboardList className="h-5 w-5 text-primary" />
+                      Possible Risk Factors (Educational Only)
+                    </h3>
+                    <p className="text-foreground/80 leading-relaxed">
+                      {analysisResults.possibleRiskFactors}
+                    </p>
+                  </div>
+                )}
+
+                {/* 5️⃣ Why You Should Consult a Doctor */}
+                {analysisResults.whyConsultDoctor && (
+                  <div className="medical-card p-6 mb-6 bg-blue-500/5 border-blue-500/20">
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <UserCheck className="h-5 w-5 text-blue-500" />
+                      Why You Should Consult a Doctor
+                    </h3>
+                    <p className="text-foreground/80 leading-relaxed">
+                      {analysisResults.whyConsultDoctor}
+                    </p>
+                  </div>
+                )}
+
+                {/* 6️⃣ Reassurance Message */}
                 {analysisResults.reassurance && (
                   <div className="medical-card p-6 mb-6 bg-success/5 border-success/20">
                     <div className="flex items-start gap-3">
-                      <Heart className="h-5 w-5 text-success flex-shrink-0 mt-0.5" />
-                      <p className="text-foreground/80 leading-relaxed">{analysisResults.reassurance}</p>
+                      <CheckCircle2 className="h-5 w-5 text-success flex-shrink-0 mt-0.5" />
+                      <p className="text-foreground/80 leading-relaxed font-medium">
+                        {analysisResults.reassurance}
+                      </p>
                     </div>
                   </div>
                 )}
               </>
             )}
 
-            {/* CLINICIAN MODE CONTENT */}
+            {/* ===================== CLINICIAN MODE CONTENT ===================== */}
             {mode === "clinician" && (
               <>
-                {/* Summary */}
-                <div className="medical-card p-6 mb-6">
-                  <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
-                    <Stethoscope className="h-5 w-5 text-primary" />
-                    Technical Summary
-                  </h3>
-                  <p className="text-foreground/80 leading-relaxed">{analysisResults.summary}</p>
-                </div>
+                {/* 1️⃣ Imaging Type & Region */}
+                {analysisResults.imagingTypeAndRegion && (
+                  <div className="medical-card p-6 mb-6 bg-primary/5 border-primary/20">
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <Stethoscope className="h-5 w-5 text-primary" />
+                      Imaging Type & Region
+                    </h3>
+                    <pre className="text-foreground/80 leading-relaxed whitespace-pre-wrap font-sans">
+                      {analysisResults.imagingTypeAndRegion}
+                    </pre>
+                  </div>
+                )}
 
-                {/* Guideline Points */}
-                {analysisResults.guidelinePoints && analysisResults.guidelinePoints.length > 0 && (
+                {/* 2️⃣ Key Observations */}
+                {analysisResults.keyObservations && analysisResults.keyObservations.length > 0 && (
                   <div className="medical-card p-6 mb-6">
                     <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
-                      <BookOpen className="h-5 w-5 text-primary" />
-                      RSNA/CDC Guideline Points
+                      <ClipboardList className="h-5 w-5 text-primary" />
+                      Key Observations
                     </h3>
                     <ul className="space-y-2">
-                      {analysisResults.guidelinePoints.map((point, index) => (
-                        <li key={index} className="text-foreground/80 leading-relaxed pl-2">
-                          {point}
+                      {analysisResults.keyObservations.map((obs, index) => (
+                        <li key={index} className="text-foreground/80 leading-relaxed">
+                          {obs}
                         </li>
                       ))}
                     </ul>
                   </div>
                 )}
 
-                {/* Clinical Correlation */}
-                {analysisResults.clinicalCorrelation && (
+                {/* 3️⃣ Impression */}
+                {analysisResults.impression && (
                   <div className="medical-card p-6 mb-6 bg-accent/30">
-                    <h3 className="font-semibold text-foreground mb-3">Clinical Correlation</h3>
-                    <p className="text-foreground/80 leading-relaxed">{analysisResults.clinicalCorrelation}</p>
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <Brain className="h-5 w-5 text-primary" />
+                      Impression (Non-diagnostic)
+                    </h3>
+                    <p className="text-foreground/80 leading-relaxed">
+                      {analysisResults.impression}
+                    </p>
+                  </div>
+                )}
+
+                {/* 4️⃣ Recommendation */}
+                {analysisResults.recommendation && (
+                  <div className="medical-card p-6 mb-6 bg-blue-500/5 border-blue-500/20">
+                    <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <CheckCircle2 className="h-5 w-5 text-blue-500" />
+                      Recommendation
+                    </h3>
+                    <p className="text-foreground/80 leading-relaxed">
+                      {analysisResults.recommendation}
+                    </p>
                   </div>
                 )}
               </>
             )}
 
-            {/* Items (both modes) */}
-            {analysisResults.items && analysisResults.items.length > 0 && (
-              <div className="space-y-4 mb-8">
-                <h3 className="font-semibold text-foreground">Details</h3>
-                {analysisResults.items.map((item, index) => (
-                  <ResultCard key={index} item={item} mode={mode} />
-                ))}
-              </div>
-            )}
-
+            {/* ===================== COMMON SECTIONS ===================== */}
+            
             {/* References */}
             {analysisResults.references && analysisResults.references.length > 0 && (
               <div className="medical-card p-6 mb-6">
@@ -460,7 +531,7 @@ const Index = () => {
               </div>
             )}
 
-            {/* Disclaimer */}
+            {/* 7️⃣ Disclaimer (Required) */}
             <div className="medical-card p-6 mb-8 bg-warning/5 border-warning/20">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="h-5 w-5 text-warning flex-shrink-0 mt-0.5" />
