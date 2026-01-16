@@ -10,22 +10,25 @@ const corsHeaders = {
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// SAFE RESPONSE SCHEMA - Always matches this structure
+// SAFE RESPONSE SCHEMA - Complete structure for both modes
 interface SafeResponse {
   reportType: string;
   mode: "patient" | "clinician";
+  // Patient Mode fields
+  whatThisTestIsAbout: string | null;
+  simpleImageExplanation: string | null;
   summary: string;
-  simpleExplanation: string | null;
-  guidelinePoints: string[] | null;
+  possibleRiskFactors: string | null;
+  whyConsultDoctor: string | null;
+  reassurance: string | null;
+  // Clinician Mode fields
+  imagingTypeAndRegion: string | null;
+  keyObservations: string[] | null;
+  impression: string | null;
+  recommendation: string | null;
+  // Common fields
   references: string[];
   disclaimer: string;
-  items: Array<{
-    name: string;
-    value: string;
-    explanation: string;
-  }> | null;
-  reassurance: string | null;
-  clinicalCorrelation: string | null;
 }
 
 interface RetrievedChunk {
@@ -53,35 +56,59 @@ interface SafeContext {
 
 // Create safe fallback response
 function createSafeResponse(mode: "patient" | "clinician", reportType: string, message?: string): SafeResponse {
-  const defaultDisclaimer = "Educational use only. Not a medical diagnosis.";
+  const defaultDisclaimer = "⚠️ This explanation is for educational purposes only and is not a medical diagnosis.";
+  
+  const formattedType = formatReportTypeName(reportType);
   
   if (mode === "patient") {
     return {
       reportType,
       mode,
-      summary: message || "This report describes patterns that doctors usually review carefully. It does not confirm any illness.",
-      simpleExplanation: "This is a type of medical imaging that helps doctors see inside the body. Your doctor will explain what they found.",
-      guidelinePoints: null,
+      whatThisTestIsAbout: `A ${formattedType} is a type of scan that takes detailed pictures of the inside of your body to help doctors understand what is happening.`,
+      simpleImageExplanation: "This image shows internal body structures that doctors usually check for size, shape, and any unusual changes.",
+      summary: message || "The scan shows areas that doctors carefully look at to understand your health. By itself, this image does not confirm any illness.",
+      possibleRiskFactors: "Doctors often consider factors like age, lifestyle, long-term conditions, or previous medical history when reviewing scans like this.",
+      whyConsultDoctor: "Only a doctor can review this image along with your symptoms and medical history to explain what it means for you.",
+      reassurance: "Many scan findings are common and manageable. Your doctor will guide you clearly on the next steps.",
+      imagingTypeAndRegion: null,
+      keyObservations: null,
+      impression: null,
+      recommendation: null,
       references: [],
       disclaimer: defaultDisclaimer,
-      items: null,
-      reassurance: "Your doctor will explain your results and answer any questions you have.",
-      clinicalCorrelation: null,
     };
   }
   
   return {
     reportType,
     mode,
+    whatThisTestIsAbout: null,
+    simpleImageExplanation: null,
     summary: message || "Imaging study received. Guideline-based interpretation requires clinical correlation.",
-    simpleExplanation: null,
-    guidelinePoints: ["• Clinical correlation recommended", "• Consult primary literature for detailed interpretation"],
-    references: [],
-    disclaimer: defaultDisclaimer,
-    items: null,
+    possibleRiskFactors: null,
+    whyConsultDoctor: null,
     reassurance: null,
-    clinicalCorrelation: "Per standard practice, imaging findings should be interpreted in conjunction with clinical presentation and patient history.",
+    imagingTypeAndRegion: `Imaging: ${formattedType}\nRegion: To be determined based on clinical context`,
+    keyObservations: [
+      "• Structural patterns noted",
+      "• Density / contrast variations observed",
+      "• Areas requiring clinical correlation"
+    ],
+    impression: "Imaging features warrant clinical correlation with patient history and additional investigations if indicated.",
+    recommendation: "Correlation with clinical findings and formal radiology report is advised.",
+    references: [],
+    disclaimer: "AI-generated educational summary. Not a substitute for formal radiological interpretation.",
   };
+}
+
+function formatReportTypeName(type: string): string {
+  const typeMap: Record<string, string> = {
+    ct: "CT Scan",
+    mri: "MRI",
+    xray: "X-Ray",
+    lab: "Lab Report"
+  };
+  return typeMap[type.toLowerCase()] || type.toUpperCase();
 }
 
 // Generate embedding using Gemini API with fallback
@@ -346,7 +373,7 @@ serve(async (req) => {
     if (!imageBase64) {
       return new Response(
         JSON.stringify(createSafeResponse(safeMode, "unknown", "No image provided. Please upload a valid medical report.")),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -357,7 +384,7 @@ serve(async (req) => {
       console.error("LOVABLE_API_KEY not configured");
       return new Response(
         JSON.stringify(createSafeResponse(safeMode, "unknown", "Service configuration error. Please try again later.")),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -398,7 +425,9 @@ serve(async (req) => {
       ? "Use ONLY the provided CONTEXT to generate your response." 
       : "No specific guidelines retrieved. Provide general educational information about this imaging type.";
 
-    // Step 4: Build mode-specific prompts
+    const formattedType = formatReportTypeName(reportType);
+
+    // Step 4: Build mode-specific prompts with COMPLETE structured output
     const systemPrompt = safeMode === "clinician" 
       ? `You are a radiology education assistant for healthcare professionals.
 
@@ -406,50 +435,59 @@ ${retrievedContext}
 
 ${contextNote}
 
+IMAGING TYPE: ${formattedType}
+
+MANDATORY OUTPUT STRUCTURE (JSON):
+{
+  "imagingTypeAndRegion": "Imaging: ${formattedType}\\nRegion: [detected or 'Unspecified']",
+  "keyObservations": [
+    "• [Observation 1 using standard medical terminology]",
+    "• [Observation 2 - describe only what is visible]",
+    "• [Observation 3 - areas requiring correlation]"
+  ],
+  "impression": "[2-3 lines, non-diagnostic. Example: 'Imaging features warrant clinical correlation with patient history and additional investigations if indicated.']",
+  "recommendation": "Correlation with clinical findings and formal radiology report is advised.",
+  "disclaimer": "AI-generated educational summary. Not a substitute for formal radiological interpretation."
+}
+
 RULES:
 - Use concise medical terminology
-- Present key points as bullet points
-- Reference guidelines when available
-- End with "Clinical correlation recommended"
-
-PROHIBITED:
-- Diagnostic conclusions
-- Urgency labels ("critical", "emergent")
-- Treatment recommendations
-- Disease predictions
-
-OUTPUT (JSON):
-{
-  "summary": "Technical overview (2-3 sentences)",
-  "guidelinePoints": ["• Point 1", "• Point 2"],
-  "clinicalCorrelation": "Clinical correlation recommended.",
-  "disclaimer": "Educational use only. Not a medical diagnosis."
-}`
+- Present key observations as bullet points
+- Only describe what is visible - never hallucinate findings
+- No disease confirmation or diagnosis
+- No urgency labels ("critical", "emergent", "urgent")
+- No treatment recommendations`
       : `You are a friendly assistant helping patients understand medical imaging.
 
 ${retrievedContext}
 
 ${contextNote}
 
+IMAGING TYPE: ${formattedType}
+
+MANDATORY OUTPUT STRUCTURE (JSON):
+{
+  "whatThisTestIsAbout": "A ${formattedType} is a type of scan that [simple 1-2 sentence explanation of what this imaging does].",
+  "simpleImageExplanation": "[Explain what is visible in the image using plain language. Avoid medical terms or explain them in brackets. Example: 'This image shows internal body structures that doctors usually check for size, shape, and any unusual changes.']",
+  "summary": "[2-3 lines max. State that the image shows patterns doctors review and does NOT confirm a disease. Example: 'The scan shows areas that doctors carefully look at to understand your health. By itself, this image does not confirm any illness.']",
+  "possibleRiskFactors": "Doctors often consider factors like age, lifestyle, long-term conditions, or previous medical history when reviewing scans like this.",
+  "whyConsultDoctor": "Only a doctor can review this image along with your symptoms and medical history to explain what it means for you.",
+  "reassurance": "Many scan findings are common and manageable. Your doctor will guide you clearly on the next steps.",
+  "disclaimer": "⚠️ This explanation is for educational purposes only and is not a medical diagnosis."
+}
+
 RULES:
-- Use very simple, everyday words
-- Keep explanations short (2-4 sentences)
-- Focus on what the test IS FOR, not results
-- Be calm and reassuring
+- Use very simple, everyday words a child could understand
+- Keep explanations short (2-4 sentences max per section)
+- Focus on what the test IS FOR, not specific results
+- Be calm and reassuring throughout
+- NEVER use these words: abnormal, concerning, urgent, critical, dangerous, serious, worrying
 
 PROHIBITED:
-- Medical jargon
-- Words like: abnormal, concerning, urgent, critical
+- Medical jargon without explanation
 - Disease names or diagnoses
 - Specific findings interpretation
-
-OUTPUT (JSON):
-{
-  "summary": "Simple explanation of the test (2-4 sentences). End with: 'This system does not provide medical diagnoses.'",
-  "simpleExplanation": "What this test helps doctors see",
-  "reassurance": "Your doctor will explain your results.",
-  "disclaimer": "Educational use only. Not a medical diagnosis."
-}`;
+- Any language that could cause anxiety`;
 
     // Step 5: Call LLM with error handling
     console.log("Calling AI for analysis...");
@@ -462,13 +500,13 @@ OUTPUT (JSON):
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "google/gemini-2.5-flash", // Using flash for speed and cost
+          model: "google/gemini-2.5-flash",
           messages: [
             { role: "system", content: systemPrompt },
             { 
               role: "user", 
               content: [
-                { type: "text", text: "Explain this medical image for educational purposes only." },
+                { type: "text", text: "Analyze this medical image and provide a structured educational explanation." },
                 { type: "image_url", image_url: { url: `data:${fileType};base64,${imageBase64}` } }
               ]
             }
@@ -482,7 +520,6 @@ OUTPUT (JSON):
         console.error("AI API error:", response.status);
         const fallback = createSafeResponse(safeMode, reportType);
         fallback.references = references;
-        // CRITICAL: Always return 200 so frontend receives the safe data
         return new Response(
           JSON.stringify(fallback),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -497,12 +534,12 @@ OUTPUT (JSON):
         fallback.references = references;
         return new Response(
           JSON.stringify(fallback),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
       // Step 6: Parse response safely
-      let parsedResult: Partial<SafeResponse>;
+      let parsedResult: any;
       try {
         const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, content];
         parsedResult = JSON.parse(jsonMatch[1].trim());
@@ -511,25 +548,52 @@ OUTPUT (JSON):
         parsedResult = { summary: content.substring(0, 500) };
       }
 
-      // Build final safe response
+      // Build final safe response with all required fields
+      const defaultResponse = createSafeResponse(safeMode, reportType);
+      
       const finalResponse: SafeResponse = {
         reportType,
         mode: safeMode,
-        summary: parsedResult.summary || createSafeResponse(safeMode, reportType).summary,
-        simpleExplanation: safeMode === "patient" ? (parsedResult.simpleExplanation || null) : null,
-        guidelinePoints: safeMode === "clinician" ? (parsedResult.guidelinePoints || null) : null,
+        // Patient Mode fields
+        whatThisTestIsAbout: safeMode === "patient" 
+          ? (parsedResult.whatThisTestIsAbout || defaultResponse.whatThisTestIsAbout) 
+          : null,
+        simpleImageExplanation: safeMode === "patient" 
+          ? (parsedResult.simpleImageExplanation || defaultResponse.simpleImageExplanation) 
+          : null,
+        summary: parsedResult.summary || defaultResponse.summary,
+        possibleRiskFactors: safeMode === "patient" 
+          ? (parsedResult.possibleRiskFactors || defaultResponse.possibleRiskFactors) 
+          : null,
+        whyConsultDoctor: safeMode === "patient" 
+          ? (parsedResult.whyConsultDoctor || defaultResponse.whyConsultDoctor) 
+          : null,
+        reassurance: safeMode === "patient" 
+          ? (parsedResult.reassurance || defaultResponse.reassurance) 
+          : null,
+        // Clinician Mode fields
+        imagingTypeAndRegion: safeMode === "clinician" 
+          ? (parsedResult.imagingTypeAndRegion || defaultResponse.imagingTypeAndRegion) 
+          : null,
+        keyObservations: safeMode === "clinician" 
+          ? (parsedResult.keyObservations || defaultResponse.keyObservations) 
+          : null,
+        impression: safeMode === "clinician" 
+          ? (parsedResult.impression || defaultResponse.impression) 
+          : null,
+        recommendation: safeMode === "clinician" 
+          ? (parsedResult.recommendation || defaultResponse.recommendation) 
+          : null,
+        // Common fields
         references,
-        disclaimer: parsedResult.disclaimer || "Educational use only. Not a medical diagnosis.",
-        items: parsedResult.items || null,
-        reassurance: safeMode === "patient" ? (parsedResult.reassurance || "Your doctor will explain your results.") : null,
-        clinicalCorrelation: safeMode === "clinician" ? (parsedResult.clinicalCorrelation || "Clinical correlation recommended.") : null,
+        disclaimer: parsedResult.disclaimer || defaultResponse.disclaimer,
       };
 
       console.log("=== WORKFLOW COMPLETE ===");
       
       return new Response(
         JSON.stringify(finalResponse),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
 
     } catch (llmError) {
@@ -538,7 +602,7 @@ OUTPUT (JSON):
       fallback.references = references;
       return new Response(
         JSON.stringify(fallback),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -546,7 +610,7 @@ OUTPUT (JSON):
     console.error("Request error:", error);
     return new Response(
       JSON.stringify(createSafeResponse("patient", "unknown", "An error occurred. Please try again.")),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
